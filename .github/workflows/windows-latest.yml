@@ -41,6 +41,7 @@ jobs:
             mingw-w64-ucrt-x86_64-zlib
             mingw-w64-ucrt-x86_64-hwloc
             mingw-w64-ucrt-x86_64-luajit
+            mingw-w64-ucrt-x86_64-dlfcn
 
 # --- 2. COMPILAR LIBDAQ (Autotools) ---
       - name: Build LibDAQ
