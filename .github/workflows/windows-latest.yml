@@ -42,23 +42,19 @@ jobs:
             mingw-w64-ucrt-x86_64-hwloc
             mingw-w64-ucrt-x86_64-luajit
 
-      # --- 2. COMPILAR LIBDAQ (Autotools) ---
+# --- 2. COMPILAR LIBDAQ (Autotools) ---
       - name: Build LibDAQ
         run: |
-          # Activamos fail-fast nativo de bash
           set -e
-          
-          echo ">>> Clonando LibDAQ..."
           rm -rf libdaq
           git clone --depth 1 https://github.com/snort3/libdaq.git
           cd libdaq
           
-          echo ">>> Ejecutando Autotools..."
           ./bootstrap
           ./configure --prefix=/usr/local/daq
           
-          echo ">>> Compilando e instalando..."
-          make -j$(nproc)
+          # Lanzamos make con un solo hilo y guardamos el log
+          make -j1 2>&1 | tee build_error.log
           make install
           cd ..
 
