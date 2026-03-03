@@ -1,0 +1,42 @@
+name: Snort3 Windows Build
+
+on: [push, workflow_dispatch] # Se ejecuta al subir cambios o manualmente
+
+jobs:
+  build:
+    runs-on: windows-latest # Máquina con VS 2022 preinstalado
+
+    steps:
+      - name: Checkout Snort3
+        uses: actions/checkout@v4
+
+      - name: Setup vcpkg
+        run: |
+          git clone https://github.com/microsoft/vcpkg.git
+          .\vcpkg\bootstrap-vcpkg.bat
+          .\vcpkg\vcpkg install luajit pcre2 openssl hwloc zlib flex bison libpcap --triplet x64-windows
+
+      - name: Build LibDAQ
+        run: |
+          git clone https://github.com/snort3/libdaq.git
+          cd libdaq
+          mkdir build
+          cd build
+          cmake .. -DCMAKE_TOOLCHAIN_FILE="../vcpkg/scripts/buildsystems/vcpkg.cmake" -DCMAKE_INSTALL_PREFIX="../../daq_install"
+          cmake --build . --config Release --target install
+
+      - name: Configure and Build Snort3
+        run: |
+          mkdir build
+          cd build
+          cmake .. -DCMAKE_TOOLCHAIN_FILE="../vcpkg/scripts/buildsystems/vcpkg.cmake" `
+                   -DDAQ_INCLUDE_DIR="../daq_install/include" `
+                   -DDAQ_LIBRARIES_DIR="../daq_install/lib" `
+                   -DENABLE_STATIC_DAQ=ON
+          cmake --build . --config Release
+
+      - name: Upload Artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: snort3-windows-binaries
+          path: build/src/Release/snort.exe
