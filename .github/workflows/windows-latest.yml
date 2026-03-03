@@ -9,56 +9,68 @@ jobs:
     steps:
       - name: Checkout Snort3
         uses: actions/checkout@v4
+        with:
+          submodules: recursive
 
-      - name: Install Build Tools (Flex & Bison)
+      # --- 1. CACHÉ PARA NO ESPERAR 20 MINUTOS ---
+      - name: Cache VCPKG
+        uses: actions/cache@v4
+        with:
+          path: |
+            ${{ env.VCPKG_INSTALLATION_ROOT }}/installed
+            vcpkg_installed
+          key: ${{ runner.os }}-vcpkg-${{ hashFiles('**/vcpkg.json') }}-v2
+
+      - name: Install Tools (Flex/Bison)
         run: |
-          # Instalamos winflexbison vía Chocolatey (más fiable en Runners)
           choco install winflexbison3 --limit-output
-          # Añadimos la ruta al PATH para que CMake lo encuentre como "flex" y "bison"
+          # Añadir al PATH de GitHub Actions
           echo "C:\ProgramData\chocolatey\lib\winflexbison3\tools" >> $env:GITHUB_PATH
         shell: pwsh
 
-      - name: Install Libraries with VCPKG
+      - name: Install Dependencies (VCPKG)
         run: |
-          $vcpkgPath = "$env:VCPKG_INSTALLATION_ROOT\vcpkg.exe"
-          # Aquí instalamos solo las librerías pesadas
-          & $vcpkgPath install luajit pcre2 openssl hwloc zlib libpcap --triplet x64-windows
+          $vcpkg = "$env:VCPKG_INSTALLATION_ROOT\vcpkg.exe"
+          & $vcpkg install luajit pcre2 openssl hwloc zlib libpcap --triplet x64-windows
         shell: pwsh
 
+      # --- 2. COMPILAR LIBDAQ (Rutas explícitas) ---
       - name: Build LibDAQ
         run: |
           git clone --depth 1 https://github.com/snort3/libdaq.git
-          cd libdaq
-          mkdir build; cd build
-          cmake .. -G "Visual Studio 17 2022" -A x64 `
+          cmake -G "Visual Studio 17 2022" -A x64 `
+            -S libdaq -B libdaq/build `
             -DCMAKE_TOOLCHAIN_FILE="$($env:VCPKG_INSTALLATION_ROOT)/scripts/buildsystems/vcpkg.cmake" `
-            -DCMAKE_INSTALL_PREFIX="../../daq_install"
-          cmake --build . --config Release --target install
+            -DCMAKE_INSTALL_PREFIX="$((Get-Location).Path)/daq_install"
+          cmake --build libdaq/build --config Release --target install
         shell: pwsh
 
+      # --- 3. COMPILAR SNORT 3 ---
       - name: Configure and Build Snort3
         run: |
-          mkdir build_snort; cd build_snort
-          # Forzamos a CMake a ver el Flex/Bison de Chocolatey si fuera necesario
-          cmake .. -G "Visual Studio 17 2022" -A x64 `
+          # Usamos -S . (directorio actual) y -B build_snort
+          cmake -G "Visual Studio 17 2022" -A x64 `
+            -S . -B build_snort `
             -DCMAKE_TOOLCHAIN_FILE="$($env:VCPKG_INSTALLATION_ROOT)/scripts/buildsystems/vcpkg.cmake" `
-            -DDAQ_INCLUDE_DIR="../daq_install/include" `
-            -DDAQ_LIBRARIES_DIR="../daq_install/lib" `
+            -DDAQ_INCLUDE_DIR="$((Get-Location).Path)/daq_install/include" `
+            -DDAQ_LIBRARIES_DIR="$((Get-Location).Path)/daq_install/lib" `
             -DENABLE_STATIC_DAQ=ON
-          cmake --build . --config Release
+          cmake --build build_snort --config Release
         shell: pwsh
 
-      - name: Collect Artifacts
+      # --- 4. RECOLECCIÓN DE ARTEFACTOS ---
+      - name: Collect Binaries and DLLs
         run: |
-          mkdir dist
+          New-Item -ItemType Directory -Path dist
           copy build_snort\src\Release\snort.exe dist\
-          # Copiamos las DLLs de las librerías instaladas por vcpkg
-          # Nota: la ruta vcpkg_installed se crea en la raíz del checkout
-          copy vcpkg_installed\x64-windows\bin\*.dll dist\
+          # Buscamos todas las DLLs necesarias en la carpeta de vcpkg
+          Get-ChildItem -Path "vcpkg_installed\x64-windows\bin\*.dll" | Copy-Item -Destination dist\
+          # También snort.lua y configuraciones básicas
+          if (Test-Path "lua") { copy lua\*.lua dist\ }
         shell: pwsh
 
-      - name: Upload Zip
+      - name: Upload Artifacts
         uses: actions/upload-artifact@v4
         with:
-          name: snort3-windows-binaries
+          name: snort3-windows-x64-full
           path: dist/
