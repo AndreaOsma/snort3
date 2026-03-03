@@ -1,10 +1,14 @@
-name: Snort3 Windows Build
+name: Snort3 Windows Build (MSYS2)
 
 on: [push, workflow_dispatch]
 
 jobs:
   build:
     runs-on: windows-latest
+    defaults:
+      run:
+        # Ejecutamos todo dentro del entorno Bash de MSYS2
+        shell: msys2 {0}
 
     steps:
       - name: Checkout Snort3
@@ -12,76 +16,99 @@ jobs:
         with:
           submodules: recursive
 
-      # --- 1. ACTIVAR CACHÉ (Para no esperar otros 20 min) ---
-      - name: Cache VCPKG
-        uses: actions/cache@v4
+      # --- 1. CONFIGURACIÓN DEL ENTORNO MSYS2 ---
+      - name: Setup MSYS2
+        uses: msys2/setup-msys2@v2
         with:
-          path: |
-            ${{ env.VCPKG_INSTALLATION_ROOT }}/installed
-            ${{ env.VCPKG_INSTALLATION_ROOT }}/packages
-          key: ${{ runner.os }}-vcpkg-snort3-v1
+          msystem: UCRT64
+          update: true
+          install: >-
+            git
+            base-devel
+            autotools
+            autoconf
+            automake
+            libtool
+            pkgconf
+            flex
+            bison
+            mingw-w64-ucrt-x86_64-toolchain
+            mingw-w64-ucrt-x86_64-cmake
+            mingw-w64-ucrt-x86_64-ninja
+            mingw-w64-ucrt-x86_64-libpcap
+            mingw-w64-ucrt-x86_64-pcre2
+            mingw-w64-ucrt-x86_64-openssl
+            mingw-w64-ucrt-x86_64-zlib
+            mingw-w64-ucrt-x86_64-hwloc
+            mingw-w64-ucrt-x86_64-luajit
 
-      - name: Install Tools (Flex/Bison/Ninja)
-        run: |
-          # Instalamos winflexbison3 y Ninja para máxima velocidad y compatibilidad
-          choco install winflexbison3 ninja --limit-output
-          echo "C:\ProgramData\chocolatey\lib\winflexbison3\tools" >> $env:GITHUB_PATH
-        shell: pwsh
-
-      - name: Install Dependencies (VCPKG)
-        run: |
-          $vcpkg = "$env:VCPKG_INSTALLATION_ROOT\vcpkg.exe"
-          # Instalamos solo las librerías necesarias
-          & $vcpkg install luajit pcre2 openssl hwloc zlib libpcap --triplet x64-windows
-        shell: pwsh
-
-      # --- 2. COMPILAR LIBDAQ (Limpio y robusto) ---
+      # --- 2. COMPILAR LIBDAQ (Autotools) ---
       - name: Build LibDAQ
         run: |
-          # Limpiamos rastro de clones anteriores si existen
-          if (Test-Path libdaq) { Remove-Item -Recurse -Force libdaq }
+          # Activamos fail-fast nativo de bash
+          set -e
+          
+          echo ">>> Clonando LibDAQ..."
+          rm -rf libdaq
           git clone --depth 1 https://github.com/snort3/libdaq.git
+          cd libdaq
           
-          # Configuramos usando Ninja (más fiable en CI)
-          cmake -G "Ninja" -S libdaq -B libdaq/build `
-            -DCMAKE_TOOLCHAIN_FILE="$($env:VCPKG_INSTALLATION_ROOT)/scripts/buildsystems/vcpkg.cmake" `
-            -DCMAKE_INSTALL_PREFIX="$((Get-Location).Path)/daq_install" `
-            -DCMAKE_BUILD_TYPE=Release
+          echo ">>> Ejecutando Autotools..."
+          ./bootstrap
+          ./configure --prefix=/usr/local/daq
           
-          # Compilamos e instalamos
-          cmake --build libdaq/build
-          cmake --install libdaq/build
-        shell: pwsh
+          echo ">>> Compilando e instalando..."
+          make -j$(nproc)
+          make install
+          cd ..
 
-      # --- 3. COMPILAR SNORT 3 ---
+      # --- 3. COMPILAR SNORT 3 (CMake + Ninja) ---
       - name: Configure and Build Snort3
         run: |
-          if (Test-Path build_snort) { Remove-Item -Recurse -Force build_snort }
+          set -e
+          rm -rf build_snort
           
-          cmake -G "Ninja" -S . -B build_snort `
-            -DCMAKE_TOOLCHAIN_FILE="$($env:VCPKG_INSTALLATION_ROOT)/scripts/buildsystems/vcpkg.cmake" `
-            -DDAQ_INCLUDE_DIR="$((Get-Location).Path)/daq_install/include" `
-            -DDAQ_LIBRARIES_DIR="$((Get-Location).Path)/daq_install/lib" `
-            -DENABLE_STATIC_DAQ=ON `
-            -DCMAKE_BUILD_TYPE=Release
+          # PKG_CONFIG_PATH es vital para que CMake encuentre el LibDAQ compilado
+          export PKG_CONFIG_PATH=/usr/local/daq/lib/pkgconfig:$PKG_CONFIG_PATH
           
-          cmake --build build_snort
-        shell: pwsh
+          echo ">>> Configurando Snort 3..."
+          cmake -G "Ninja" -S . -B build_snort \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DDAQ_INCLUDE_DIR=/usr/local/daq/include \
+            -DDAQ_LIBRARIES_DIR=/usr/local/daq/lib \
+            -DENABLE_STATIC_DAQ=ON
+            
+          echo ">>> Compilando Snort 3..."
+          cmake --build build_snort -j$(nproc)
 
       # --- 4. EMPAQUETADO ---
       - name: Collect Artifacts
         run: |
-          New-Item -ItemType Directory -Path dist
-          copy build_snort\src\snort.exe dist\
-          # Copiamos las DLLs desde la ruta real de vcpkg en el runner
-          $vcpkgBin = "$env:VCPKG_INSTALLATION_ROOT\installed\x64-windows\bin"
-          copy "$vcpkgBin\*.dll" dist\
-          # Incluimos archivos LUA básicos para que Snort pueda arrancar
-          if (Test-Path "lua") { copy "lua\*.lua" dist\ }
-        shell: pwsh
+          set -e
+          mkdir -p dist
+          
+          cp build_snort/src/snort.exe dist/
+          
+          # [Inferencia] Copiamos las dependencias dinámicas base al directorio final. 
+          # Nota: Que esta copia manual de DLLs permita la ejecución portable de snort.exe 
+          # en un Windows limpio es el comportamiento esperado, no garantizado.
+          cp /ucrt64/bin/libpcap*.dll dist/ || true
+          cp /ucrt64/bin/libpcre2*.dll dist/ || true
+          cp /ucrt64/bin/libcrypto*.dll dist/ || true
+          cp /ucrt64/bin/libssl*.dll dist/ || true
+          cp /ucrt64/bin/zlib*.dll dist/ || true
+          cp /ucrt64/bin/libhwloc*.dll dist/ || true
+          cp /ucrt64/bin/lua*.dll dist/ || true
+          cp /ucrt64/bin/libgcc_s_seh-1.dll dist/ || true
+          cp /ucrt64/bin/libstdc++-6.dll dist/ || true
+          cp /ucrt64/bin/libwinpthread-1.dll dist/ || true
+          
+          if [ -d "lua" ]; then
+            cp -r lua/* dist/
+          fi
 
       - name: Upload Zip
         uses: actions/upload-artifact@v4
         with:
-          name: snort3-windows-x64-binaries
+          name: snort3-windows-ucrt64-binaries
           path: dist/
