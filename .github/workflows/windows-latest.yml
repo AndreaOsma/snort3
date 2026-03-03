@@ -41,3 +41,17 @@ jobs:
         with:
           name: snort3-windows-binaries
           path: build/src/Release/snort.exe
+
+      - name: Collect Dependencies (DLLs)
+        run: |
+          mkdir dist
+          copy build\src\Release\snort.exe dist\
+          # Copiamos todas las DLLs que vcpkg compiló para que el exe arranque
+          copy vcpkg_installed\x64-windows\bin\*.dll dist\
+        shell: pwsh
+
+      - name: Upload Artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: snort3-complete-package
+          path: dist/
