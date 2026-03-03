@@ -10,19 +10,26 @@ jobs:
       - name: Checkout Snort3
         uses: actions/checkout@v4
 
-      - name: Install Dependencies with VCPKG
+      - name: Install Build Tools (Flex & Bison)
         run: |
-          # Usamos la ruta predefinida en los runners de GitHub
+          # Instalamos winflexbison vía Chocolatey (más fiable en Runners)
+          choco install winflexbison3 --limit-output
+          # Añadimos la ruta al PATH para que CMake lo encuentre como "flex" y "bison"
+          echo "C:\ProgramData\chocolatey\lib\winflexbison3\tools" >> $env:GITHUB_PATH
+        shell: pwsh
+
+      - name: Install Libraries with VCPKG
+        run: |
           $vcpkgPath = "$env:VCPKG_INSTALLATION_ROOT\vcpkg.exe"
-          & $vcpkgPath install luajit pcre2 openssl hwloc zlib winflexbison libpcap --triplet x64-windows
+          # Aquí instalamos solo las librerías pesadas
+          & $vcpkgPath install luajit pcre2 openssl hwloc zlib libpcap --triplet x64-windows
         shell: pwsh
 
       - name: Build LibDAQ
         run: |
           git clone --depth 1 https://github.com/snort3/libdaq.git
           cd libdaq
-          mkdir build
-          cd build
+          mkdir build; cd build
           cmake .. -G "Visual Studio 17 2022" -A x64 `
             -DCMAKE_TOOLCHAIN_FILE="$($env:VCPKG_INSTALLATION_ROOT)/scripts/buildsystems/vcpkg.cmake" `
             -DCMAKE_INSTALL_PREFIX="../../daq_install"
@@ -31,8 +38,8 @@ jobs:
 
       - name: Configure and Build Snort3
         run: |
-          mkdir build_snort
-          cd build_snort
+          mkdir build_snort; cd build_snort
+          # Forzamos a CMake a ver el Flex/Bison de Chocolatey si fuera necesario
           cmake .. -G "Visual Studio 17 2022" -A x64 `
             -DCMAKE_TOOLCHAIN_FILE="$($env:VCPKG_INSTALLATION_ROOT)/scripts/buildsystems/vcpkg.cmake" `
             -DDAQ_INCLUDE_DIR="../daq_install/include" `
@@ -41,16 +48,17 @@ jobs:
           cmake --build . --config Release
         shell: pwsh
 
-      - name: Collect Binaries and DLLs
+      - name: Collect Artifacts
         run: |
           mkdir dist
           copy build_snort\src\Release\snort.exe dist\
-          # Recolectamos las DLLs que Snort necesitará para arrancar
+          # Copiamos las DLLs de las librerías instaladas por vcpkg
+          # Nota: la ruta vcpkg_installed se crea en la raíz del checkout
           copy vcpkg_installed\x64-windows\bin\*.dll dist\
         shell: pwsh
 
-      - name: Upload Artifact
+      - name: Upload Zip
         uses: actions/upload-artifact@v4
         with:
-          name: snort3-windows-x64
+          name: snort3-windows-binaries
           path: dist/
